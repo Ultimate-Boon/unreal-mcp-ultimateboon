@@ -195,7 +195,7 @@ This project enables **natural language control of Unreal Engine 5.7** through A
 AI Assistant (Claude/Cursor/Windsurf)
     ↓ [MCP Protocol]
 Python MCP Servers (7 FastMCP servers)
-    ↓ [TCP/JSON on 127.0.0.1:55557]
+    ↓ [TCP/JSON on 127.0.0.1:55558]
 C++ Plugin (UnrealMCP EditorSubsystem)
     ↓ [Direct API calls]
 Unreal Engine 5.7 Editor
@@ -214,7 +214,7 @@ Unreal Engine 5.7 Editor
 - 7 independent FastMCP servers (blueprint, editor, umg, node, datatable, project, blueprint_action)
 - **MCP tools are defined in `*_mcp_server.py` files** (NOT in `*_tools/` folders)
 - Shared utilities in `utils/` (blueprints/, nodes/, umg/, datatable/, editor/, project/)
-- TCP communication via `utils/unreal_connection_utils.py` (connects to 127.0.0.1:55557)
+- TCP communication via `utils/unreal_connection_utils.py` (connects to 127.0.0.1:55558)
 
 **C++ Plugin**: `MCPGameProject/Plugins/UnrealMCP/`
 - Main dispatcher: `Commands/UnrealMCPMainDispatcher.h/.cpp`
@@ -232,7 +232,7 @@ Unreal Engine 5.7 Editor
 5. Initialize `FUnrealMCPMainDispatcher::Initialize()` (register all commands)
 
 **EditorSubsystem Startup** (`UUnrealMCPBridge::Initialize`):
-1. Create TCP listener socket on 127.0.0.1:55557
+1. Create TCP listener socket on 127.0.0.1:55558
 2. Start `MCPServerRunnable` thread (async command loop)
 3. Accept connections, read JSON commands (48KB buffer), execute via dispatcher, send responses
 
@@ -462,13 +462,13 @@ The C++ plugin uses a **modular service layer pattern** for clean separation of 
 ```cpp
 // C++: UnrealMCPBridge.cpp
 #define MCP_SERVER_HOST "127.0.0.1"
-#define MCP_SERVER_PORT 55557
+#define MCP_SERVER_PORT 55558
 ```
 
 ```python
 # Python: utils/unreal_connection_utils.py
 UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 55557
+UNREAL_PORT = 55558
 ```
 
 ## Python MCP Tool Guidelines

@@ -5,7 +5,7 @@ This file tracks MCP tool limitations discovered during development. When encoun
 ## Active Issues
 
 ### MCP TCP Connection Freezes (Mitigated 2026-05-31)
-- **Affected**: All MCP servers communicating via TCP port 55557
+- **Affected**: All MCP servers communicating via TCP port 55558
 - **Previous Problem**: After long sessions, MCP tools could hang silently with no error returned to Cursor. Causes included:
   - C++ server logging parse errors but never sending a response (client/server deadlock)
   - `Future.Get()` blocking the server thread indefinitely when the game thread was stalled (modal dialogs, heavy compiles)

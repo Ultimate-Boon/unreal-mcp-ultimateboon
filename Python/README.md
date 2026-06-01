@@ -16,7 +16,7 @@ This directory contains **7 specialized FastMCP servers** that provide natural l
 | **Project** | `project_mcp_server.py` | Project organization and input systems |
 | **Blueprint Action** | `blueprint_action_mcp_server.py` | Dynamic node discovery |
 
-Each server communicates with the C++ plugin via **TCP on localhost:55557**.
+Each server communicates with the C++ plugin via **TCP on localhost:55558**.
 
 ## Quick Setup
 
@@ -122,7 +122,7 @@ python scripts/test_editor.py
 # ... etc
 ```
 
-These scripts bypass the MCP layer and connect directly to the C++ plugin's TCP server (localhost:55557).
+These scripts bypass the MCP layer and connect directly to the C++ plugin's TCP server (localhost:55558).
 
 ## Development
 
@@ -142,7 +142,7 @@ See [CLAUDE.md](../CLAUDE.md) for detailed development guidelines.
 AI Assistant (Claude/Cursor/Windsurf)
     ↓ [MCP Protocol]
 Python MCP Servers (7 servers)
-    ↓ [TCP/JSON on localhost:55557]
+    ↓ [TCP/JSON on localhost:55558]
 C++ Plugin (UnrealMCP)
     ↓ [Direct Unreal Engine API]
 Unreal Engine 5.7
@@ -158,8 +158,8 @@ Each Python tool sends JSON commands via TCP to the C++ plugin, which executes t
 
 **Solutions**:
 - Ensure Unreal Editor is running with the MCPGameProject open
-- Check Output Log (Window → Developer Tools → Output Log) for "MCP TCP Server started on 127.0.0.1:55557"
-- Verify no firewall is blocking localhost:55557
+- Check Output Log (Window → Developer Tools → Output Log) for "MCP TCP Server started on 127.0.0.1:55558"
+- Verify no firewall is blocking localhost:55558
 
 ### Import Errors
 

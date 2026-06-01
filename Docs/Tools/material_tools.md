@@ -5,7 +5,7 @@ Tools for creating and manipulating Material Instances and their parameters.
 ## Server
 
 - **File**: `material_mcp_server.py`
-- **Port**: 55557 (shared TCP)
+- **Port**: 55558 (shared TCP)
 
 ---
 

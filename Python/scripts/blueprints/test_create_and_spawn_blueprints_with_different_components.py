@@ -52,7 +52,7 @@ def send_command(command: str, params: Dict[str, Any]) -> Optional[Dict[str, Any
     try:
         # Connect to Unreal MCP server (fresh connection for each command)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 55558))
         
         try:
             # Create command object

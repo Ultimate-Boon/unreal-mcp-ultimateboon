@@ -115,7 +115,7 @@ public:
 
 1. **Installation**: The plugin is automatically loaded with the project
 2. **Usage**: Commands are executed through the MCP protocol via TCP connection
-3. **Configuration**: Server runs on port 55557 by default
+3. **Configuration**: Server runs on port 55558 by default
 
 ### For Plugin Developers
 

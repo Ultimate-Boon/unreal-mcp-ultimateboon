@@ -73,7 +73,7 @@ cd MCPGameProject
 open MCPGameProject/MCPGameProject.uproject
 ```
 
-✅ **Success indicator:** Unreal Editor opens, and you see "MCP TCP Server started on 127.0.0.1:55557" in the Output Log (Window → Developer Tools → Output Log).
+✅ **Success indicator:** Unreal Editor opens, and you see "MCP TCP Server started on 127.0.0.1:55558" in the Output Log (Window → Developer Tools → Output Log).
 
 ## Step 2: Setup Python MCP Servers (5 minutes)
 
@@ -286,8 +286,8 @@ Explore the comprehensive documentation for each tool category:
 
 **Solutions:**
 1. Ensure Unreal Editor is running with MCPGameProject open
-2. Check Output Log for "MCP TCP Server started on 127.0.0.1:55557"
-3. Verify no firewall is blocking localhost:55557
+2. Check Output Log for "MCP TCP Server started on 127.0.0.1:55558"
+3. Verify no firewall is blocking localhost:55558
 4. Restart Unreal Editor if the TCP server didn't start
 
 ### MCP Servers Not Found

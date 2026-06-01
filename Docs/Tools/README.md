@@ -34,7 +34,7 @@ Python MCP Tool (@mcp.tool())
     ↓
 send_tcp_command(command_type, params)
     ↓
-TCP Socket (localhost:55557)
+TCP Socket (localhost:55558)
     ↓
 C++ UnrealMCP Plugin
     ↓
@@ -141,7 +141,7 @@ Unreal asset paths follow this format:
 ### Connection
 
 - **Host**: `127.0.0.1` (localhost)
-- **Port**: `55557`
+- **Port**: `55558`
 - **Protocol**: TCP
 - **Encoding**: UTF-8 JSON
 - **Buffer Size**: 48KB (49152 bytes)
@@ -154,7 +154,7 @@ import json
 
 def send_tcp_command(command_type: str, params: dict):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 55558))
 
         # Send command
         command = {"command": command_type, "params": params}

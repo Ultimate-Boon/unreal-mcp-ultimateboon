@@ -10,7 +10,7 @@ for components that 'components' field happily listed (because BuildComponentsIn
 includes inherited components via the CDO, but BuildComponentPropertiesInfo
 only searched the local SimpleConstructionScript).
 
-Requires the UE editor running with the UnrealMCP plugin on 127.0.0.1:55557.
+Requires the UE editor running with the UnrealMCP plugin on 127.0.0.1:55558.
 
 Pass criteria:
   1. create_blueprint with parent_class=Character succeeds.
@@ -36,7 +36,7 @@ logger = logging.getLogger("TestInheritedComponentProps")
 def send_command(command: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 55558))
         try:
             command_obj = {"type": command, "params": params}
             sock.sendall(json.dumps(command_obj).encode('utf-8'))

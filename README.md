@@ -221,7 +221,7 @@ The project uses a **dual-component synchronized architecture** enabling natural
 AI Assistant (Claude/Cursor/Windsurf)
     ↓ [MCP Protocol]
 Python MCP Servers (15 specialized FastMCP servers)
-    ↓ [TCP/JSON on localhost:55557]
+    ↓ [TCP/JSON on localhost:55558]
 C++ Plugin (UnrealMCP EditorSubsystem)
     ↓ [Direct Unreal Engine API]
 Unreal Engine 5.7 Editor
@@ -230,7 +230,7 @@ Unreal Engine 5.7 Editor
 ### Core Components
 
 **C++ Plugin** ([MCPGameProject/Plugins/UnrealMCP](MCPGameProject/Plugins/UnrealMCP/))
-- **EditorSubsystem** with TCP server on localhost:55557
+- **EditorSubsystem** with TCP server on localhost:55558
 - **Command Dispatcher** routing requests to specialized handlers
 - **Service Layer** implementing business logic (Blueprint, UMG, Node, DataTable, Editor, Project)
 - **Factories** for type-safe object creation (Components, Widgets)
@@ -486,7 +486,7 @@ A complete example configuration is provided in [mcp.json](mcp.json).
 
 1. **Ensure Unreal Editor is Running**
    - Launch the project with `LaunchProject.bat` or manually
-   - The TCP server starts automatically on localhost:55557
+   - The TCP server starts automatically on localhost:55558
 
 2. **Test with Your AI Assistant**
    ```
@@ -581,8 +581,8 @@ See [MCPGameProject/Plugins/UnrealMCP/Documentation/](MCPGameProject/Plugins/Unr
 
 **Connection Issues:**
 - Ensure Unreal Editor is running before starting AI assistant
-- Verify TCP server started (check logs: "MCP TCP Server started on 127.0.0.1:55557")
-- Check firewall settings for localhost:55557
+- Verify TCP server started (check logs: "MCP TCP Server started on 127.0.0.1:55558")
+- Check firewall settings for localhost:55558
 
 **Build Errors:**
 - Clean and rebuild: `RebuildProject.bat`

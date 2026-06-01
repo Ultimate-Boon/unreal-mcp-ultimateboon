@@ -19,7 +19,7 @@ The Unreal MCP project enables **natural language control of Unreal Engine 5.7**
 
 ### 🐍 Python MCP Server Component (`Python/`)
 - **FastMCP-based servers**: Individual MCP servers per domain (blueprint_mcp_server.py, datatable_mcp_server.py, etc.)
-- **TCP Communication**: Uses TCP sockets (127.0.0.1:55557) via `send_tcp_command()` for Unreal Engine communication
+- **TCP Communication**: Uses TCP sockets (127.0.0.1:55558) via `send_tcp_command()` for Unreal Engine communication
 - **Tool Modules**: Organized in domain-specific folders (`blueprint_tools/`, `umg_tools/`, `editor_tools/`, etc.)
 - **Environment**: Uses `uv` for dependency management with Python 3.10+ requirement
 
@@ -91,7 +91,7 @@ Each domain has its own MCP server following this pattern:
 ```python
 # Example: blueprint_mcp_server.py
 TCP_HOST = "127.0.0.1"
-TCP_PORT = 55557
+TCP_PORT = 55558
 
 async def send_tcp_command(command_type: str, params: Dict[str, Any]):
     # Standard TCP communication pattern used across all servers

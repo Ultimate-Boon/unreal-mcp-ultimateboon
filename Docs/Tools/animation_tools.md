@@ -5,7 +5,7 @@ Tools for creating and manipulating Animation Blueprints, state machines, and an
 ## Server
 
 - **File**: `animation_mcp_server.py`
-- **Port**: 55557 (shared TCP)
+- **Port**: 55558 (shared TCP)
 
 ---
 

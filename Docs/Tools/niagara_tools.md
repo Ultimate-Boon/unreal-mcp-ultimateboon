@@ -5,7 +5,7 @@ Tools for creating and manipulating Niagara particle systems, emitters, and para
 ## Server
 
 - **File**: `niagara_mcp_server.py`
-- **Port**: 55557 (shared TCP)
+- **Port**: 55558 (shared TCP)
 
 ---
 
