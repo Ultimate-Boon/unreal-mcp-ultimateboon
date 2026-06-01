@@ -1,0 +1,6 @@
+# Fork setup helpers must use LF line endings so they work on macOS/Linux.
+# A CRLF in the apply.sh shebang, or in the sparse-checkout patterns file,
+# breaks bash / git on those platforms. Scoped to these files only so the
+# rest of the upstream tree is left untouched.
+.sparse-setup/apply.sh text eol=lf
+.sparse-setup/patterns text eol=lf
