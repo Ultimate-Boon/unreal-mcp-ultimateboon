@@ -2,7 +2,55 @@
 
 This file tracks MCP tool limitations discovered during development. When encountering issues, document them here.
 
+## Resolved Issues
+
+### `capture_viewport_screenshot` Returned a Stale Frame When the Editor Was Unfocused (Fixed 2026-06-11)
+- **Affected**: `projectMCP.capture_viewport_screenshot`
+- **Problem**: The capture read the last drawn frame (`GetViewportScreenShot` → `ReadPixels`) without forcing a
+  redraw. With the editor window unfocused — the normal state while an MCP agent drives it — the editor throttles
+  non-realtime viewport redraws, so `Invalidate()`/`RedrawLevelEditingViewports()` (already called by
+  `set_viewport_camera`) only queued a redraw the throttled tick never performed. Consecutive captures returned
+  byte-identical stale PNGs despite successful `set_viewport_camera`/`viewmode` changes in between. `HighResShot`
+  via console rendered the true state, which confirmed the camera state itself was fine.
+- **Fix**: `FViewport::Draw(bShouldPresent=true)` + `FlushRenderingCommands()` synchronously in the capture
+  command, right before reading pixels — bypasses the editor-tick throttle. The Python tool schema is unchanged;
+  the docstring now documents the fresh-frame guarantee.
+- **Verification**: With the editor unfocused: camera A (top-down) → capture, camera B (ground horizon) →
+  capture. Each PNG must differ and show its own camera state (previously consecutive captures were
+  byte-identical). Verified live 2026-06-11 on SimPrototype's Lvl_TopDown.
+- **No automation test**: the repro depends on the window focus/throttle state, which an in-editor automation run
+  cannot control deterministically (a focused session redraws normally and the bug never manifests). Covered by
+  the live MCP verification protocol above.
+
+### `execute_console_command` Ignored the Active PIE World (Fixed 2026-06-10)
+- **Affected**: `editorMCP.execute_console_command`
+- **Problem**: The C++ command always executed through `GEditor->GetEditorWorldContext()`. During PIE, runtime
+  commands such as world regeneration changed the editor world while the visible PIE session remained unchanged.
+- **Fix**: Prefer `GEditor->GetPIEWorldContext()->World()` while PIE is active, with the editor world as the
+  fallback outside play sessions. The Python tool schema is unchanged.
+- **Verification**: Execute a world-specific console command during PIE and confirm its runtime log/HUD state
+  changes in the PIE world; stop PIE and confirm the same tool still executes against the editor world.
+
+### `set_viewport_camera` Ignored the Active PIE Camera (Fixed 2026-06-10)
+- **Affected**: `editorMCP.set_viewport_camera`
+- **Problem**: The command only moved the editor viewport. During PIE, captures stayed on the gameplay pawn camera,
+  so project-specific camera and spring-arm behavior ignored the requested transform.
+- **Fix**: In PIE, create or reuse a transient `ACameraActor`, apply the requested transform/FOV, and make it the
+  local player's view target. Outside PIE, retain the editor viewport behavior. The Python tool schema is unchanged.
+- **Verification**: Capture the same PIE target from distinct camera transforms and confirm the images change
+  accordingly.
+
 ## Active Issues
+
+### `viewmode` Console Commands Don't Reach the Editor Viewport
+- **Affected**: `editorMCP.execute_console_command` with `viewmode unlit` / `viewmode wireframe` / etc.
+- **Problem**: The command executes successfully but the level-editor viewport keeps its current view mode —
+  the exec path doesn't route to the `FEditorViewportClient` the way the in-viewport console does. Confirmed
+  2026-06-11 (both via capture_viewport_screenshot after the stale-frame fix AND via `HighResShot`, so it is
+  not a stale-frame symptom — the viewport genuinely never switches).
+- **Workaround**: none via MCP today; change the view mode by hand in the viewport toolbar.
+- **Fix candidate**: a dedicated `set_viewport_viewmode` tool (or special-casing in execute_console_command)
+  calling `FEditorViewportClient::SetViewMode(VMI_*)` on the active perspective viewport.
 
 ### MCP TCP Connection Freezes (Mitigated 2026-05-31)
 - **Affected**: All MCP servers communicating via TCP port 55558
@@ -24,6 +72,17 @@ This file tracks MCP tool limitations discovered during development. When encoun
   4. Restart Python MCP servers in Cursor after UE restart
 - **Known Limitation**: A timed-out command may still complete on the game thread later (AsyncTask is not cancelled). The timeout unblocks the server thread so other MCP calls can proceed.
 - **Debug TCP logging**: Set `UNREAL_MCP_TCP_DEBUG=1` to enable `Python/tcp_debug.log` (disabled by default to avoid unbounded file growth).
+
+### Material-Output Property List Is Duplicated Across 4 Files (Refactor Candidate)
+- **Affected**: `connect_expression_to_material_output`, `get_material_expression_metadata`, `compile_material`, `delete_material_expression`
+- **Problem**: The set of supported `EMaterialProperty` outputs is hand-maintained as **7 separate hard-coded lists** across 4 files:
+  - `MaterialExpressionCore.cpp` — `GetMaterialPropertyFromString` (string→enum for connect)
+  - `MaterialExpressionConnection.cpp` — `NameToMaterialPropertyStrict` (SetMaterialAttributes pins)
+  - `MaterialExpressionMetadata.cpp` — `AddOutputIfConnected` (material_outputs), orphan `CheckMaterialOutput`, `TraceFlow`
+  - `MaterialExpressionManagement.cpp` — `DisconnectFromOutput` (delete path), orphan `CheckMaterialOutput` (compile)
+- **Impact**: Adding a new output (e.g. Displacement in UE 5.7) requires touching all 7 or things silently break — a node wired to a missing output is mis-flagged as an orphan (`compile_material`), invisible in `material_outputs`, or left dangling on delete. The lists are also already inconsistent (`DisconnectFromOutput` omits Refraction/SubsurfaceColor that the others include).
+- **Fix (deferred)**: Extract one shared `static const TArray<TPair<EMaterialProperty, FString>>` (or iterate the engine's `FMaterialAttributeDefinitionMap`) and drive all sites from it.
+- **Workaround**: When adding an output, grep `MP_AmbientOcclusion` as a sentinel — every match needs the new property added beside it.
 
 ### Struct Field GUID Middle Numbers Can Change When Structs Are Modified
 - **Affected**: `get_struct_pin_names`, `get_datatable_row_names`, DataTable operations
@@ -160,6 +219,35 @@ This file tracks MCP tool limitations discovered during development. When encoun
 ---
 
 ## Resolved Issues
+
+- **ProjectMCP set_object_property Silently Failed on Object-Array Properties (e.g. UVoxelMegaMaterial.SurfaceTypes)** - Resolved 2026-06-11
+  - Issue (2026-06-04): setting `MM_Landscape.SurfaceTypes` (`TArray<UVoxelSurfaceTypeAsset*>` on a `UVoxelMegaMaterial`) returned `success: true` but the array stayed at the original 6 elements after a cache-delete + editor relaunch.
+  - Root cause (reconstructed): NOT the array import — the command's tail saved via `UEditorAssetLibrary::SaveAsset(RAW asset path)`. With a package-form path that save silently no-ops (the same object-path-vs-package-path resolution bug as the create_data_asset persist issue above, fixed 2026-06-07). The import succeeded in memory, the save never hit disk, and the relaunch-based verification flow lost the change. The save now uses the normalized OBJECT path.
+  - Verified live 2026-06-11 (UE 5.7, SimPrototype): a 7-element `SurfaceTypes` write (6 biomes + ST_CaveWall) onto a `MM_Landscape` duplicate applies all 7 (re-exported value confirms, incl. after `PostEditChangeProperty`) and persists to disk immediately.
+  - Hardening (2026-06-11), because the old lesson was "do not trust the success flag":
+    - every `set_object_property` response now carries **`applied_value`** — the property RE-EXPORTED from the asset after import + PostEditChangeProperty (what will actually persist); compare it against intent instead of trusting `success`;
+    - **unresolvable object references are now an error**: UE's ImportText imports an unloadable object path as `None` WITHOUT a parser error (verified live: a bogus array element produced `(None)` + `success: true`). For object-ref properties/arrays/sets a `None` token the caller did not explicitly write is rejected and the previous value is **rolled back**; explicit `None` in the input keeps working.
+  - Historical note: the original OPEN entry suspected `PropertyServiceArrayOps::SetArrayPropertyFromJson` — that path is unrelated; this command imports via `FProjectDataAssetService::SetObjectProperty` → `ImportText_Direct`.
+
+- **ProjectMCP create_data_asset / create_asset Don't Persist to Disk; properties dropped; save_asset rejects package path** - Fixed 2026-06-07
+  - Issue: `create_data_asset` returned `success` but the `.uasset` was never written to disk (lived in memory only → lost on editor close, uncommittable). Passing a `properties` map silently dropped ALL properties (asset saved with class defaults). `save_asset("/Game/Foo/Bar")` (package path) returned "Asset does not exist", though `save_asset("/Game/Foo/Bar.Bar")` (object path) worked. `create_asset` shared the persist bug.
+  - Root Cause: `FProjectDataAssetService::CreateDataAsset`/`CreateAsset` persisted via `UEditorAssetLibrary::SaveAsset(PackageName, ...)`, which forwards to `UEditorAssetSubsystem` and resolves the path through the asset registry. The registry keys on the OBJECT path (`/Game/X.X`); a brand-new in-memory asset does NOT resolve by its bare PACKAGE path (`/Game/X`), so the save silently no-ops — and `CreateDataAsset` didn't even check the return (false success). The properties loop called `SetDataAssetProperty`, which `StaticLoadObject`s the not-yet-saved asset → null → properties dropped. `FProjectAssetOperations::SaveAsset` gated on `DoesAssetExist(rawPath)` without the object-path normalization that `RenameAsset`/`MoveAsset` already use. (Same class of bug as the 2026-01-11 MaterialMCP persist fix below.)
+  - Fix (`ProjectDataAssetService.cpp` + `ProjectAssetOperations.cpp`):
+    - `CreateDataAsset`/`CreateAsset` → explicit, checked `UPackage::SavePackage()` on the in-hand `UPackage*` (no registry path dependency; mirrors `MaterialService.cpp`). On failure: roll back via `FAssetRegistryModule::AssetDeleted` + `ClearFlags(RF_Public|RF_Standalone)` and return a real error (no more silent success).
+    - Properties now applied directly on the in-hand new object via a shared `ProjectDataAssetServiceHelpers::ApplyJsonProperty` helper (also used by `SetDataAssetProperty`) — no `StaticLoadObject` during creation.
+    - `FProjectAssetOperations::SaveAsset` normalizes package→object path before `DoesAssetExist`/`SaveAsset` (mirrors `RenameAsset`/`MoveAsset`). `SetDataAssetProperty`/`SetObjectProperty` saves likewise use the normalized path.
+  - C++ only (no Python change). **Verified live** (rebuilt DLL, SimPrototype editor): `create_data_asset(ColonyConfig, properties {MinNavigableLevel:-7, MaxNavigableLevel:9})` → `.uasset` on disk (no separate save) with the correct NON-default values; `save_asset("/Game/Test/DA_McpPersistTest")` (package path) succeeds; `create_asset(/Script/SimPrototype.ColonyConfig)` → on disk; abstract-class create correctly refused.
+
+- **MaterialMCP create_material_instance Crashes Python with `name 'json' is not defined`** - Fixed 2026-06-04
+  - Issue: `create_material_instance` (and the batch param tools) called `json.dumps(...)` when a `scalar_params`/`vector_params`/`texture_params` dict was passed, but `Python/material_mcp_server.py` never imported `json` → `NameError`, before the TCP command was even sent.
+  - Fix: Added `import json` at the top of `material_mcp_server.py`. (Python-only — needs a material MCP server restart to take effect.)
+  - Verified live: `create_material_instance(..., vector_params={...})` succeeds.
+
+- **MaterialMCP set_material_expression_property Silently Stores (0,0,0,0) for FLinearColor `"(R=..,G=..,B=..,A=..)"` DefaultValue** - Fixed 2026-06-04
+  - Issue: Setting a `VectorParameter` (or `Constant3Vector`/`Constant4Vector`) `DefaultValue`/`Constant` to the UE ImportText form `"(R=1,G=1,B=1,A=1)"` returned `success: true` but stored `(0,0,0,0)` — `ParseIntoArray(",")` produced tokens like `"(R=1"` and `FCString::Atof("(R=1")` returns `0.0`.
+  - Real-world impact: greyed an entire voxel terrain (a shared master's `Tint` defaulted to black, multiplying all biome albedo to 0).
+  - Fix: Added `TryParseLinearColorString()` in `MaterialExpressionCreation.cpp` accepting BOTH `"(R=..)"` (`FLinearColor::InitFromString`) and `"R,G,B[,A]"`, returning an ERROR (not silent success) when neither parses. Applied to `VectorParameter`, `Constant3Vector`, `Constant4Vector`.
+  - Verified live: `"(R=0.5,G=0.6,B=0.7,A=1.0)"` → `[0.5,0.6,0.7,1.0]`; `"notacolor"` → error; `"0.1,0.2,0.3,0.4"` → `[0.1,0.2,0.3,0.4]`.
 
 - **NiagaraMCP get_module_inputs Cannot Read Default UniformRanged Dynamic Input Min/Max Values** - Fixed 2026-01-17
   - Issue: When a module input uses an UniformRanged dynamic input with default/unmodified values (e.g., systems created in Unreal Editor using stock dynamic inputs), the min/max values could not be read because they were baked into the dynamic input script asset.

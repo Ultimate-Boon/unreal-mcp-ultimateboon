@@ -1,6 +1,8 @@
 #include "Services/MaterialExpressionService.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+#include "MaterialEditingLibrary.h"        // UpdateMaterialFunction / DeleteMaterialExpressionInFunction (MaterialFunction support)
+#include "Materials/MaterialFunction.h"    // UMaterialFunction (auto-detect when path is an MF, not a Material)
 #include "MaterialShared.h"  // For FMaterialUpdateContext
 #include "Dom/JsonValue.h"
 #include "RHIShaderPlatform.h"  // For GMaxRHIShaderPlatform
@@ -15,6 +17,29 @@ bool FMaterialExpressionService::DeleteExpression(
     UMaterial* Material = FindAndValidateMaterial(MaterialPath, OutError);
     if (!Material)
     {
+        // Not a UMaterial — try a UMaterialFunction (e.g. an AttributePostProcess MF).
+        if (UMaterialFunction* MatFunc = LoadObject<UMaterialFunction>(nullptr, *MaterialPath))
+        {
+            UMaterialExpression* FnExpr = FindExpressionInFunction(MatFunc, ExpressionId);
+            if (!FnExpr)
+            {
+                OutError = FString::Printf(TEXT("Expression not found in MaterialFunction: %s"), *ExpressionId.ToString());
+                return false;
+            }
+            UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MatFunc, FnExpr);
+            UMaterialEditingLibrary::UpdateMaterialFunction(MatFunc, nullptr);
+            MatFunc->MarkPackageDirty();
+            if (UPackage* FnPackage = MatFunc->GetOutermost())
+            {
+                const FString FnFileName = FPackageName::LongPackageNameToFilename(FnPackage->GetName(), FPackageName::GetAssetPackageExtension());
+                FSavePackageArgs FnSaveArgs;
+                FnSaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+                UPackage::SavePackage(FnPackage, MatFunc, *FnFileName, FnSaveArgs);
+            }
+            OutError.Empty();
+            UE_LOG(LogTemp, Log, TEXT("Deleted expression %s from MaterialFunction %s"), *ExpressionId.ToString(), *MaterialPath);
+            return true;
+        }
         return false;
     }
 
@@ -95,6 +120,8 @@ bool FMaterialExpressionService::DeleteExpression(
     DisconnectFromOutput(MP_OpacityMask);
     DisconnectFromOutput(MP_WorldPositionOffset);
     DisconnectFromOutput(MP_AmbientOcclusion);
+    DisconnectFromOutput(MP_Displacement);  // UE 5.7 Nanite tessellation — else deleting a node wired
+                                            // to Displacement leaves a dangling input expression ptr
 
     // Remove from expression collection
     EditorData->ExpressionCollection.RemoveExpression(Expression);
@@ -139,6 +166,36 @@ bool FMaterialExpressionService::SetExpressionProperty(
     UMaterial* Material = FindAndValidateMaterial(MaterialPath, OutError);
     if (!Material)
     {
+        // Not a UMaterial — try a UMaterialFunction (edit Custom HLSL / Constant inside an MF).
+        if (UMaterialFunction* MatFunc = LoadObject<UMaterialFunction>(nullptr, *MaterialPath))
+        {
+            UMaterialExpression* FnExpr = FindExpressionInFunction(MatFunc, ExpressionId);
+            if (!FnExpr)
+            {
+                OutError = FString::Printf(TEXT("Expression not found in MaterialFunction: %s"), *ExpressionId.ToString());
+                return false;
+            }
+            FnExpr->Modify();
+            MatFunc->Modify();
+            TSharedPtr<FJsonObject> FnProps = MakeShared<FJsonObject>();
+            FnProps->SetField(PropertyName, Value);
+            if (!ApplyExpressionProperties(FnExpr, FnProps, OutError))
+            {
+                return false;
+            }
+            UMaterialEditingLibrary::UpdateMaterialFunction(MatFunc, nullptr);
+            MatFunc->MarkPackageDirty();
+            if (UPackage* FnPackage = MatFunc->GetOutermost())
+            {
+                const FString FnFileName = FPackageName::LongPackageNameToFilename(FnPackage->GetName(), FPackageName::GetAssetPackageExtension());
+                FSavePackageArgs FnSaveArgs;
+                FnSaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+                UPackage::SavePackage(FnPackage, MatFunc, *FnFileName, FnSaveArgs);
+            }
+            OutError.Empty();
+            UE_LOG(LogTemp, Log, TEXT("Set property %s on expression in MaterialFunction %s"), *PropertyName, *MaterialPath);
+            return true;
+        }
         return false;
     }
 
@@ -335,6 +392,8 @@ bool FMaterialExpressionService::CompileMaterial(
     CheckMaterialOutput(MP_AmbientOcclusion);
     CheckMaterialOutput(MP_Refraction);
     CheckMaterialOutput(MP_SubsurfaceColor);
+    CheckMaterialOutput(MP_Displacement);  // UE 5.7 Nanite tessellation — a node feeding Displacement
+                                           // is a real sink, not an orphan (else compile_material miscounts)
 
     // Find orphans
     TArray<TSharedPtr<FJsonValue>> OrphanArray;

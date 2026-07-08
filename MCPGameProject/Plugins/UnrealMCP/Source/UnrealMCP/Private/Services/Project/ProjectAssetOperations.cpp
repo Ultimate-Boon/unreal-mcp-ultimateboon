@@ -123,6 +123,40 @@ bool FProjectAssetOperations::DeleteAsset(const FString& AssetPath, FString& Out
     return true;
 }
 
+bool FProjectAssetOperations::SaveAsset(const FString& AssetPath, FString& OutError)
+{
+    // Normalize a PACKAGE path ("/Game/Foo/Bar") to the OBJECT path ("/Game/Foo/Bar.Bar") that
+    // UEditorAssetSubsystem expects. DoesAssetExist / SaveAsset resolve via the asset registry,
+    // which keys on the object path — a bare package path fails to resolve ("Asset does not
+    // exist") even when the asset is loaded. RenameAsset / MoveAsset already normalize this way;
+    // SaveAsset was the lone operation that didn't, so save_asset("/Game/Foo/Bar") wrongly
+    // reported the asset missing. Inputs that already carry a "." object suffix pass through.
+    FString NormalizedPath = AssetPath;
+    if (!NormalizedPath.Contains(TEXT(".")))
+    {
+        NormalizedPath = AssetPath + TEXT(".") + FPaths::GetBaseFilename(AssetPath);
+    }
+
+    // Validate asset exists
+    if (!UEditorAssetLibrary::DoesAssetExist(NormalizedPath))
+    {
+        OutError = FString::Printf(TEXT("Asset does not exist: %s"), *AssetPath);
+        return false;
+    }
+
+    // Persist the asset's package to disk. bOnlyIfIsDirty=false → always write, so callers
+    // can rely on the on-disk .uasset being current — e.g. after a C++ NewObject +
+    // MarkPackageDirty that never auto-saves, or MCP edits that leave the package dirty.
+    if (!UEditorAssetLibrary::SaveAsset(NormalizedPath, /*bOnlyIfIsDirty*/ false))
+    {
+        OutError = FString::Printf(TEXT("Failed to save asset: %s"), *AssetPath);
+        return false;
+    }
+
+    UE_LOG(LogTemp, Display, TEXT("MCP Project: Successfully saved asset: %s"), *AssetPath);
+    return true;
+}
+
 bool FProjectAssetOperations::RenameAsset(const FString& AssetPath, const FString& NewName, FString& OutNewAssetPath, FString& OutError)
 {
     // Validate inputs

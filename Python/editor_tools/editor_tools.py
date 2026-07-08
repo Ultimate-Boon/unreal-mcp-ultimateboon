@@ -11,6 +11,7 @@ from utils.editor.editor_operations import (
     spawn_actor as spawn_actor_impl,
     delete_actor as delete_actor_impl,
     delete_asset as delete_asset_impl,
+    save_asset as save_asset_impl,
     create_render_target as create_render_target_impl,
     set_actor_transform as set_actor_transform_impl,
     get_actor_properties as get_actor_properties_impl,
@@ -666,6 +667,34 @@ def register_editor_tools(mcp: FastMCP):
         return delete_asset_impl(ctx, asset_path)
 
     @mcp.tool()
+    def save_asset(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """
+        Save an asset's package to disk (persist a dirty / in-memory asset).
+
+        Writes the asset's .uasset to disk regardless of dirty state. Use this when an
+        asset was created or modified in memory but not yet persisted — e.g. a texture
+        built in C++ via NewObject + MarkPackageDirty, or an asset edited via MCP that
+        left the package dirty — so commits/reloads don't hit a stale or missing file.
+
+        Args:
+            asset_path: Full path to the asset to save (e.g., "/Game/Tests/VT_ColonyOccupancy")
+
+        Returns:
+            Dict containing:
+            - success: Whether the save succeeded
+            - asset_path: The saved asset path
+            - message: Status message or error description
+
+        Examples:
+            # Persist a runtime-generated volume texture
+            save_asset(asset_path="/Game/Tests/VT_ColonyOccupancy")
+
+            # Persist a material edited via MCP
+            save_asset(asset_path="/Game/Materials/M_MyMaterial")
+        """
+        return save_asset_impl(ctx, asset_path)
+
+    @mcp.tool()
     def create_level(
         ctx: Context,
         level_name: str,
@@ -753,6 +782,43 @@ def register_editor_tools(mcp: FastMCP):
         return set_level_world_settings_impl(ctx, level_path, game_mode)
 
     @mcp.tool()
+    def open_level(
+        ctx: Context,
+        level_path: str
+    ) -> Dict[str, Any]:
+        """
+        Open an EXISTING level (umap) as the ACTIVE editor world, by content path.
+
+        The missing counterpart to create_level (makes a NEW level active) and
+        set_level_world_settings (edits a level WITHOUT switching worlds): this switches the
+        editor's current world to an already-existing level — e.g. to leave the default
+        startup map and work on a test level.
+
+        SAFETY: World Partition levels are REFUSED. Switching the active editor world into a
+        WP map via code can trigger the engine map-load leak-check fatal (EditorServer.cpp
+        "World Memory Leaks"). The target is first loaded as an object (no world switch) to
+        detect WP; only a non-WP level is then opened. Open WP maps via the editor UI
+        (File > Open Level).
+
+        Args:
+            level_path: Package path of the level (e.g., "/Game/Tests/TestLevel_ColonyView")
+
+        Returns:
+            Dict containing:
+            - success: Whether the level was opened
+            - level_path: The level path
+            - was_world_partition: True when refused because the target is a WP level
+            - error: Message when refused/failed
+
+        Side effect:
+            A non-WP target becomes the editor's active world.
+
+        Examples:
+            open_level(level_path="/Game/Tests/TestLevel_ColonyView")
+        """
+        return send_unreal_command("open_level", {"level_path": level_path})
+
+    @mcp.tool()
     def create_render_target(
         ctx: Context,
         name: str,
@@ -794,29 +860,34 @@ def register_editor_tools(mcp: FastMCP):
         """
         Import a static mesh from disk into the Unreal Engine project.
 
-        Supports FBX, OBJ, GLTF, GLB formats.
+        Supports FBX, OBJ. Matches the editor's default Import behaviour: a multi-mesh
+        ("pack"/"set") FBX is SPLIT into one Static Mesh per mesh, each named after its FBX
+        node, at the FBX's own scale. (It is NOT merged into a single combined mesh.)
 
         Args:
             source_file_path: Absolute path to the mesh file on disk
                 (e.g., "E:/meshes/SM_Rock_Boulder_01.fbx")
-            asset_name: Name for the imported Static Mesh asset (e.g., "SM_Rock_Boulder_01")
-            folder_path: Content folder path for the imported asset (default: "/Game/Meshes")
-            import_materials: Whether to import materials from the source file (default: False)
+            asset_name: Used ONLY when the FBX contains a single mesh — that one asset is
+                renamed to asset_name. For a multi-mesh FBX it is ignored (the per-node FBX
+                names are used), so the props land as e.g. .../axe, .../jug, .../flask.
+            folder_path: Destination Content FOLDER for the imported asset(s) (default: "/Game/Meshes")
+            import_materials: Whether to import materials/textures from the source file (default: False)
 
         Returns:
             Dictionary containing:
             - success: Whether the import was successful
-            - path: Full asset path of the imported mesh
-            - name: Name of the imported asset
-            - vertex_count: Number of vertices in LOD0
-            - triangle_count: Number of triangles in LOD0
+            - count: Number of static meshes created
+            - folder: Destination folder
+            - meshes: List of {name, path, vertex_count, triangle_count} — one per created mesh
+            - path/name/vertex_count/triangle_count: mirror of the FIRST mesh (back-compat)
             - message: Success/error message
 
         Example:
+            # A pack FBX -> separate props (alchemical_table, axe, jug, ...) under the folder
             import_static_mesh(
-                source_file_path="E:/project/Content/Environment/Rocks/SM_Rock_01.fbx",
-                asset_name="SM_Rock_01",
-                folder_path="/Game/Environment/Rocks"
+                source_file_path="C:/Downloads/alchemical_set.fbx",
+                asset_name="alchemical_set",
+                folder_path="/Game/Meshes/Props"
             )
         """
         return import_static_mesh_impl(ctx, source_file_path, asset_name, folder_path, import_materials)
@@ -927,6 +998,48 @@ def register_editor_tools(mcp: FastMCP):
             execute_console_command(command="r.ScreenPercentage 50")
         """
         return send_unreal_command("execute_console_command", {"command": command})
+
+    @mcp.tool()
+    def set_viewport_camera(
+        ctx: Context,
+        location: list = None,
+        look_at: list = None,
+        rotation: list = None,
+        fov: float = None
+    ) -> Dict[str, Any]:
+        """
+        Set the editor perspective viewport camera (to frame the level for screenshots).
+
+        Lets you position the camera and then capture_viewport_screenshot from a chosen
+        angle without a human dragging the viewport — including orbiting a point to
+        check view-dependent rendering.
+
+        Args:
+            location: [X, Y, Z] camera world position. If omitted, keeps current.
+            look_at: [X, Y, Z] point to aim the camera at. Overrides rotation — ideal
+                     for orbiting: vary location around a target, aim at the target.
+            rotation: [Pitch, Yaw, Roll] explicit rotation (used only if look_at omitted).
+            fov: optional horizontal field of view in degrees.
+
+        Returns:
+            success, plus the applied location and rotation.
+
+        Examples:
+            # Look at a cavity centered at (0,0,300) from the +X side, slightly above
+            set_viewport_camera(location=[2500, 0, 1200], look_at=[0, 0, 300])
+            # Orbit 90 degrees: move to +Y side, still aiming at the cavity
+            set_viewport_camera(location=[0, 2500, 1200], look_at=[0, 0, 300])
+        """
+        params = {}
+        if location is not None:
+            params["location"] = location
+        if look_at is not None:
+            params["look_at"] = look_at
+        if rotation is not None:
+            params["rotation"] = rotation
+        if fov is not None:
+            params["fov"] = fov
+        return send_unreal_command("set_viewport_camera", params)
 
     @mcp.tool()
     def get_gpu_stats(ctx: Context) -> Dict[str, Any]:
@@ -1094,6 +1207,7 @@ def register_editor_tools(mcp: FastMCP):
     _help_registry.register(spawn_actor, category="actors")
     _help_registry.register(delete_actor, category="actors")
     _help_registry.register(delete_asset, category="assets")
+    _help_registry.register(save_asset, category="assets")
     _help_registry.register(create_render_target, category="assets")
     _help_registry.register(set_actor_transform, category="actors")
     _help_registry.register(get_actor_properties, category="actors")

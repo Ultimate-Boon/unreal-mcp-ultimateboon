@@ -11,6 +11,7 @@
 #include "Commands/Editor/SetActorPropertyCommand.h"
 #include "Commands/Editor/SetLightPropertyCommand.h"
 #include "Commands/Editor/GetLevelMetadataCommand.h"
+#include "Commands/Editor/SetViewportCameraCommand.h"
 #include "Commands/Editor/BatchDeleteActorsCommand.h"
 #include "Commands/Editor/BatchSpawnActorsCommand.h"
 #include "Commands/Editor/CreateRenderTargetCommand.h"
@@ -26,6 +27,7 @@
 #include "Commands/Editor/StopPIECommand.h"
 #include "Commands/Editor/CreateLevelCommand.h"
 #include "Commands/Editor/SetLevelWorldSettingsCommand.h"
+#include "Commands/Editor/OpenLevelCommand.h"
 
 TArray<TSharedPtr<IUnrealMCPCommand>> FEditorCommandRegistration::RegisteredCommands;
 
@@ -67,9 +69,13 @@ void FEditorCommandRegistration::RegisterAllCommands()
     RegisterAndTrackCommand(MakeShared<FStartPIECommand>());
     RegisterAndTrackCommand(MakeShared<FStopPIECommand>());
 
+    // Viewport camera control (enables automated framing for screenshots)
+    RegisterAndTrackCommand(MakeShared<FSetViewportCameraCommand>());
+
     // Level management commands
     RegisterAndTrackCommand(MakeShared<FCreateLevelCommand>());
     RegisterAndTrackCommand(MakeShared<FSetLevelWorldSettingsCommand>());
+    RegisterAndTrackCommand(MakeShared<FOpenLevelCommand>());
 
     // Note: Additional editor commands are handled by legacy command system
     // and will be migrated to the new architecture in future iterations:

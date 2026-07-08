@@ -337,6 +337,11 @@ bool FProjectService::DeleteAsset(const FString& AssetPath, FString& OutError)
     return FProjectAssetOperations::Get().DeleteAsset(AssetPath, OutError);
 }
 
+bool FProjectService::SaveAsset(const FString& AssetPath, FString& OutError)
+{
+    return FProjectAssetOperations::Get().SaveAsset(AssetPath, OutError);
+}
+
 bool FProjectService::RenameAsset(const FString& AssetPath, const FString& NewName, FString& OutNewAssetPath, FString& OutError)
 {
     return FProjectAssetOperations::Get().RenameAsset(AssetPath, NewName, OutNewAssetPath, OutError);
@@ -410,7 +415,7 @@ bool FProjectService::CreateAsset(const FString& Name, const FString& AssetClass
     return FProjectDataAssetService::Get().CreateAsset(Name, AssetClass, FolderPath, OutAssetPath, OutError);
 }
 
-bool FProjectService::SetObjectProperty(const FString& AssetPath, const FString& PropertyName, const FString& ValueString, FString& OutError)
+bool FProjectService::SetObjectProperty(const FString& AssetPath, const FString& PropertyName, const FString& ValueString, FString& OutError, FString* OutAppliedValue)
 {
-    return FProjectDataAssetService::Get().SetObjectProperty(AssetPath, PropertyName, ValueString, OutError);
+    return FProjectDataAssetService::Get().SetObjectProperty(AssetPath, PropertyName, ValueString, OutError, OutAppliedValue);
 }

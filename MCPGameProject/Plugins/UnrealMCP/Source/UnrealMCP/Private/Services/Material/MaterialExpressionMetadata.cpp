@@ -1,5 +1,6 @@
 #include "Services/MaterialExpressionService.h"
 #include "Dom/JsonValue.h"
+#include "Materials/MaterialFunction.h"   // UMaterialFunction — inspect MF graphs (AttributePostProcess etc.)
 
 TArray<TSharedPtr<FJsonValue>> FMaterialExpressionService::GetInputPinInfo(UMaterialExpression* Expression)
 {
@@ -86,17 +87,27 @@ bool FMaterialExpressionService::GetGraphMetadata(
 {
     FString Error;
     UMaterial* Material = FindAndValidateMaterial(MaterialPath, Error);
+    // Not a UMaterial — try a UMaterialFunction (e.g. an AttributePostProcess MF). Expressions +
+    // connections dump identically (same UMaterialExpression nodes); the Material-only sections
+    // (material_outputs / orphans-by-property / flow) are skipped for functions, whose graph
+    // "outputs" are FunctionOutput expressions (visible in the expressions/connections lists).
+    UMaterialFunction* MatFunc = nullptr;
     if (!Material)
     {
-        OutMetadata = MakeShared<FJsonObject>();
-        OutMetadata->SetBoolField(TEXT("success"), false);
-        OutMetadata->SetStringField(TEXT("error"), Error);
-        return false;
+        MatFunc = LoadObject<UMaterialFunction>(nullptr, *MaterialPath);
+        if (!MatFunc)
+        {
+            OutMetadata = MakeShared<FJsonObject>();
+            OutMetadata->SetBoolField(TEXT("success"), false);
+            OutMetadata->SetStringField(TEXT("error"), Error);
+            return false;
+        }
     }
 
     OutMetadata = MakeShared<FJsonObject>();
     OutMetadata->SetBoolField(TEXT("success"), true);
     OutMetadata->SetStringField(TEXT("material_path"), MaterialPath);
+    OutMetadata->SetBoolField(TEXT("is_material_function"), MatFunc != nullptr);
 
     // Determine which fields to include
     bool bIncludeAll = !Fields || Fields->Num() == 0 || Fields->Contains(TEXT("*"));
@@ -106,14 +117,23 @@ bool FMaterialExpressionService::GetGraphMetadata(
     bool bIncludeOrphans = bIncludeAll || Fields->Contains(TEXT("orphans"));
     bool bIncludeFlow = Fields && Fields->Contains(TEXT("flow"));  // Flow is opt-in, not included in "*"
 
-    UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-    if (!EditorData)
+    // Resolve the expression collection from either a Material or a MaterialFunction (same type).
+    const TArray<TObjectPtr<UMaterialExpression>>* ExpressionsPtr = nullptr;
+    if (Material)
     {
-        OutMetadata->SetNumberField(TEXT("expression_count"), 0);
-        return true;
+        UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+        if (!EditorData)
+        {
+            OutMetadata->SetNumberField(TEXT("expression_count"), 0);
+            return true;
+        }
+        ExpressionsPtr = &EditorData->ExpressionCollection.Expressions;
     }
-
-    const TArray<TObjectPtr<UMaterialExpression>>& Expressions = EditorData->ExpressionCollection.Expressions;
+    else
+    {
+        ExpressionsPtr = &MatFunc->GetExpressionCollection().Expressions;
+    }
+    const TArray<TObjectPtr<UMaterialExpression>>& Expressions = *ExpressionsPtr;
     OutMetadata->SetNumberField(TEXT("expression_count"), Expressions.Num());
 
     // Build expressions list
@@ -164,8 +184,9 @@ bool FMaterialExpressionService::GetGraphMetadata(
         OutMetadata->SetArrayField(TEXT("connections"), ConnectionArray);
     }
 
-    // Build material outputs info
-    if (bIncludeMaterialOutputs)
+    // Build material outputs info (Material-only — a MaterialFunction's outputs are FunctionOutput
+    // expressions, already present in the expressions/connections lists).
+    if (Material && bIncludeMaterialOutputs)
     {
         TSharedPtr<FJsonObject> OutputsObj = MakeShared<FJsonObject>();
 
@@ -191,6 +212,7 @@ bool FMaterialExpressionService::GetGraphMetadata(
         AddOutputIfConnected(MP_OpacityMask, TEXT("OpacityMask"));
         AddOutputIfConnected(MP_WorldPositionOffset, TEXT("WorldPositionOffset"));
         AddOutputIfConnected(MP_AmbientOcclusion, TEXT("AmbientOcclusion"));
+        AddOutputIfConnected(MP_Displacement, TEXT("Displacement"));  // UE 5.7 Nanite tessellation
 
         OutMetadata->SetObjectField(TEXT("material_outputs"), OutputsObj);
     }
@@ -215,27 +237,33 @@ bool FMaterialExpressionService::GetGraphMetadata(
             }
         }
 
-        // Check connections to material outputs
-        auto CheckMaterialOutput = [&](EMaterialProperty Prop) {
-            FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-            if (Input && Input->Expression)
-            {
-                UsedExpressions.Add(Input->Expression);
-            }
-        };
+        // Check connections to material outputs (Material-only; for a function, FunctionOutput
+        // nodes consume the final value and are already counted via the inter-expression loop).
+        if (Material)
+        {
+            auto CheckMaterialOutput = [&](EMaterialProperty Prop) {
+                FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+                if (Input && Input->Expression)
+                {
+                    UsedExpressions.Add(Input->Expression);
+                }
+            };
 
-        CheckMaterialOutput(MP_BaseColor);
-        CheckMaterialOutput(MP_Metallic);
-        CheckMaterialOutput(MP_Specular);
-        CheckMaterialOutput(MP_Roughness);
-        CheckMaterialOutput(MP_Normal);
-        CheckMaterialOutput(MP_EmissiveColor);
-        CheckMaterialOutput(MP_Opacity);
-        CheckMaterialOutput(MP_OpacityMask);
-        CheckMaterialOutput(MP_WorldPositionOffset);
-        CheckMaterialOutput(MP_AmbientOcclusion);
-        CheckMaterialOutput(MP_Refraction);
-        CheckMaterialOutput(MP_SubsurfaceColor);
+            CheckMaterialOutput(MP_BaseColor);
+            CheckMaterialOutput(MP_Metallic);
+            CheckMaterialOutput(MP_Specular);
+            CheckMaterialOutput(MP_Roughness);
+            CheckMaterialOutput(MP_Normal);
+            CheckMaterialOutput(MP_EmissiveColor);
+            CheckMaterialOutput(MP_Opacity);
+            CheckMaterialOutput(MP_OpacityMask);
+            CheckMaterialOutput(MP_WorldPositionOffset);
+            CheckMaterialOutput(MP_AmbientOcclusion);
+            CheckMaterialOutput(MP_Refraction);
+            CheckMaterialOutput(MP_SubsurfaceColor);
+            CheckMaterialOutput(MP_Displacement);  // UE 5.7 Nanite tessellation — a node feeding
+                                                   // Displacement is a real sink, not an orphan
+        }
 
         // Find orphans - expressions not in UsedExpressions
         TArray<TSharedPtr<FJsonValue>> OrphanArray;
@@ -257,8 +285,9 @@ bool FMaterialExpressionService::GetGraphMetadata(
         OutMetadata->SetNumberField(TEXT("orphan_count"), OrphanArray.Num());
     }
 
-    // Flow visualization - trace paths from source nodes to material outputs
-    if (bIncludeFlow)
+    // Flow visualization - trace paths from source nodes to material outputs (Material-only;
+    // a function has no material-property outputs to trace from).
+    if (Material && bIncludeFlow)
     {
         TSharedPtr<FJsonObject> FlowObj = MakeShared<FJsonObject>();
 
@@ -331,6 +360,7 @@ bool FMaterialExpressionService::GetGraphMetadata(
         TraceFlow(MP_OpacityMask, TEXT("OpacityMask"));
         TraceFlow(MP_WorldPositionOffset, TEXT("WorldPositionOffset"));
         TraceFlow(MP_AmbientOcclusion, TEXT("AmbientOcclusion"));
+        TraceFlow(MP_Displacement, TEXT("Displacement"));  // UE 5.7 Nanite tessellation
 
         OutMetadata->SetObjectField(TEXT("flow"), FlowObj);
     }

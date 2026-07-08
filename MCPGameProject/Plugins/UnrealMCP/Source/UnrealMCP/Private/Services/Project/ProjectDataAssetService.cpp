@@ -12,6 +12,8 @@
 #include "Components/ActorComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#include "Misc/PackageName.h"
 
 FProjectDataAssetService& FProjectDataAssetService::Get()
 {
@@ -28,6 +30,84 @@ namespace ProjectDataAssetServiceHelpers
         {
             return UEditorAssetLibrary::MakeDirectory(FolderPath);
         }
+        return true;
+    }
+
+    // Apply a single JSON-typed value to a property directly on an ALREADY-RESOLVED object —
+    // no disk load, no save (the caller persists). Shared by CreateDataAsset, which must operate
+    // on the in-hand brand-new object (it isn't on disk yet, so a StaticLoadObject-by-path would
+    // fail and silently drop every property), and SetDataAssetProperty, which operates on a
+    // loaded asset. Mutates in memory only.
+    static bool ApplyJsonProperty(UObject* Target, const FString& PropertyName, const TSharedPtr<FJsonValue>& PropertyValue, FString& OutError)
+    {
+        if (!Target)
+        {
+            OutError = TEXT("Target object is null");
+            return false;
+        }
+        if (PropertyName.IsEmpty())
+        {
+            OutError = TEXT("Property name cannot be empty");
+            return false;
+        }
+
+        FProperty* Property = Target->GetClass()->FindPropertyByName(FName(*PropertyName));
+        if (!Property)
+        {
+            OutError = FString::Printf(TEXT("Property '%s' not found on '%s'"), *PropertyName, *Target->GetClass()->GetName());
+            return false;
+        }
+
+        void* PropertyPtr = Property->ContainerPtrToValuePtr<void>(Target);
+
+        if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
+        {
+            if (PropertyValue->Type == EJson::Number)
+            {
+                if (NumericProp->IsFloatingPoint())
+                {
+                    NumericProp->SetFloatingPointPropertyValue(PropertyPtr, PropertyValue->AsNumber());
+                }
+                else
+                {
+                    NumericProp->SetIntPropertyValue(PropertyPtr, static_cast<int64>(PropertyValue->AsNumber()));
+                }
+            }
+        }
+        else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+        {
+            if (PropertyValue->Type == EJson::Boolean)
+            {
+                BoolProp->SetPropertyValue(PropertyPtr, PropertyValue->AsBool());
+            }
+        }
+        else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+        {
+            if (PropertyValue->Type == EJson::String)
+            {
+                StrProp->SetPropertyValue(PropertyPtr, PropertyValue->AsString());
+            }
+        }
+        else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+        {
+            if (PropertyValue->Type == EJson::String)
+            {
+                NameProp->SetPropertyValue(PropertyPtr, FName(*PropertyValue->AsString()));
+            }
+        }
+        else if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
+        {
+            if (PropertyValue->Type == EJson::String)
+            {
+                TextProp->SetPropertyValue(PropertyPtr, FText::FromString(PropertyValue->AsString()));
+            }
+        }
+        else
+        {
+            OutError = FString::Printf(TEXT("Unsupported property type for '%s'"), *PropertyName);
+            return false;
+        }
+
         return true;
     }
 }
@@ -102,15 +182,18 @@ bool FProjectDataAssetService::CreateDataAsset(const FString& Name, const FStrin
         return false;
     }
 
-    // Set properties if provided
+    // Set properties (if provided) directly on the in-hand new object. We must NOT route through
+    // SetDataAssetProperty here: it loads the asset by path (StaticLoadObject), but the asset does
+    // not exist on disk yet at this point, so the load fails and every property is silently dropped.
     if (Properties.IsValid())
     {
         for (const auto& Pair : Properties->Values)
         {
+            const FString Key = FString(Pair.Key.ToView());
             FString PropError;
-            if (!SetDataAssetProperty(PackageName, Pair.Key, Pair.Value, PropError))
+            if (!ProjectDataAssetServiceHelpers::ApplyJsonProperty(NewDataAsset, Key, Pair.Value, PropError))
             {
-                UE_LOG(LogTemp, Warning, TEXT("MCP Project: Failed to set property '%s': %s"), *Pair.Key, *PropError);
+                UE_LOG(LogTemp, Warning, TEXT("MCP Project: Failed to set property '%s': %s"), *Key, *PropError);
             }
         }
     }
@@ -122,8 +205,26 @@ bool FProjectDataAssetService::CreateDataAsset(const FString& Name, const FStrin
     // Notify asset registry
     FAssetRegistryModule::AssetCreated(NewDataAsset);
 
-    // Save the asset
-    UEditorAssetLibrary::SaveAsset(PackageName, false);
+    // Persist to disk via UPackage::SavePackage on the in-hand package — NOT
+    // UEditorAssetLibrary::SaveAsset(PackageName). The latter resolves the path through the
+    // asset registry, which keys on the OBJECT path ("/Game/X.X"); a brand-new in-memory asset
+    // does NOT resolve by its bare PACKAGE path ("/Game/X"), so that save silently no-ops and
+    // the .uasset never reaches disk (and the old code didn't even check the return → false
+    // success). SavePackage operates directly on the UPackage* with no registry dependency.
+    // Same fix MaterialMCP needed — see Docs/known-issues.md "Created Assets Don't Persist".
+    const FString PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    if (!UPackage::SavePackage(Package, NewDataAsset, *PackageFileName, SaveArgs))
+    {
+        // Roll back the half-created asset: unregister it and clear the standalone root so it
+        // doesn't linger as a phantom Content Browser entry (and so a retry with the same name
+        // isn't blocked) after a disk-write failure.
+        FAssetRegistryModule::AssetDeleted(NewDataAsset);
+        NewDataAsset->ClearFlags(RF_Public | RF_Standalone);
+        OutError = FString::Printf(TEXT("DataAsset '%s' created in memory but SavePackage failed (file '%s')."), *Name, *PackageFileName);
+        return false;
+    }
 
     OutAssetPath = PackageName;
     UE_LOG(LogTemp, Display, TEXT("MCP Project: Successfully created DataAsset '%s' of type '%s' at '%s'"),
@@ -163,68 +264,17 @@ bool FProjectDataAssetService::SetDataAssetProperty(const FString& AssetPath, co
         return false;
     }
 
-    // Find the property
-    FProperty* Property = DataAsset->GetClass()->FindPropertyByName(FName(*PropertyName));
-    if (!Property)
+    // Apply the value to the property (in memory) via the shared helper.
+    if (!ProjectDataAssetServiceHelpers::ApplyJsonProperty(DataAsset, PropertyName, PropertyValue, OutError))
     {
-        OutError = FString::Printf(TEXT("Property '%s' not found on DataAsset"), *PropertyName);
         return false;
     }
 
-    // Set the property value based on type
-    void* PropertyPtr = Property->ContainerPtrToValuePtr<void>(DataAsset);
-
-    if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
-    {
-        if (PropertyValue->Type == EJson::Number)
-        {
-            if (NumericProp->IsFloatingPoint())
-            {
-                NumericProp->SetFloatingPointPropertyValue(PropertyPtr, PropertyValue->AsNumber());
-            }
-            else
-            {
-                NumericProp->SetIntPropertyValue(PropertyPtr, static_cast<int64>(PropertyValue->AsNumber()));
-            }
-        }
-    }
-    else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-    {
-        if (PropertyValue->Type == EJson::Boolean)
-        {
-            BoolProp->SetPropertyValue(PropertyPtr, PropertyValue->AsBool());
-        }
-    }
-    else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
-    {
-        if (PropertyValue->Type == EJson::String)
-        {
-            StrProp->SetPropertyValue(PropertyPtr, PropertyValue->AsString());
-        }
-    }
-    else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-    {
-        if (PropertyValue->Type == EJson::String)
-        {
-            NameProp->SetPropertyValue(PropertyPtr, FName(*PropertyValue->AsString()));
-        }
-    }
-    else if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
-    {
-        if (PropertyValue->Type == EJson::String)
-        {
-            TextProp->SetPropertyValue(PropertyPtr, FText::FromString(PropertyValue->AsString()));
-        }
-    }
-    else
-    {
-        OutError = FString::Printf(TEXT("Unsupported property type for '%s'"), *PropertyName);
-        return false;
-    }
-
-    // Mark as modified and save
+    // Mark as modified and save. Use the normalized OBJECT path — the bare package path does not
+    // resolve through the asset registry (see FProjectAssetOperations::SaveAsset), so saving by
+    // AssetPath could no-op for an asset addressed by package path.
     DataAsset->MarkPackageDirty();
-    UEditorAssetLibrary::SaveAsset(AssetPath, false);
+    UEditorAssetLibrary::SaveAsset(NormalizedPath, false);
 
     UE_LOG(LogTemp, Display, TEXT("MCP Project: Set property '%s' on DataAsset '%s'"), *PropertyName, *AssetPath);
     return true;
@@ -301,9 +351,18 @@ bool FProjectDataAssetService::CreateAsset(const FString& Name, const FString& A
     Package->MarkPackageDirty();
     FAssetRegistryModule::AssetCreated(NewAsset);
 
-    if (!UEditorAssetLibrary::SaveAsset(PackageName, false))
+    // Persist via UPackage::SavePackage on the in-hand package (see CreateDataAsset above for
+    // why path-based UEditorAssetLibrary::SaveAsset is unreliable for a brand-new asset).
+    const FString PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+    if (!UPackage::SavePackage(Package, NewAsset, *PackageFileName, SaveArgs))
     {
-        OutError = FString::Printf(TEXT("Asset created in memory but SaveAsset failed for '%s'."), *PackageName);
+        // Roll back the half-created asset (see CreateDataAsset above) so a failed save doesn't
+        // leave a phantom registry entry that blocks a retry with the same name.
+        FAssetRegistryModule::AssetDeleted(NewAsset);
+        NewAsset->ClearFlags(RF_Public | RF_Standalone);
+        OutError = FString::Printf(TEXT("Asset '%s' created in memory but SavePackage failed (file '%s')."), *Name, *PackageFileName);
         return false;
     }
 
@@ -313,7 +372,7 @@ bool FProjectDataAssetService::CreateAsset(const FString& Name, const FString& A
     return true;
 }
 
-bool FProjectDataAssetService::SetObjectProperty(const FString& AssetPath, const FString& PropertyName, const FString& ValueString, FString& OutError)
+bool FProjectDataAssetService::SetObjectProperty(const FString& AssetPath, const FString& PropertyName, const FString& ValueString, FString& OutError, FString* OutAppliedValue)
 {
     if (AssetPath.IsEmpty()) { OutError = TEXT("Asset path cannot be empty"); return false; }
     if (PropertyName.IsEmpty()) { OutError = TEXT("Property name cannot be empty"); return false; }
@@ -344,6 +403,10 @@ bool FProjectDataAssetService::SetObjectProperty(const FString& AssetPath, const
 
     // Generic import — ImportText parses object refs, arrays, structs, enums, etc.
     // Capture the UE parser's diagnostics for a precise error message.
+    // PreviousValue backs the unresolved-ref rollback below (the import mutates the
+    // asset in memory BEFORE we can detect silently-Nulled object refs).
+    FString PreviousValue;
+    Property->ExportTextItem_Direct(PreviousValue, ValuePtr, nullptr, Asset, PPF_None);
     FStringOutputDevice ImportErrors;
     Asset->Modify();
     const TCHAR* Result = Property->ImportText_Direct(*ValueString, ValuePtr, Asset, PPF_None, &ImportErrors);
@@ -358,6 +421,62 @@ bool FProjectDataAssetService::SetObjectProperty(const FString& AssetPath, const
     FPropertyChangedEvent ChangedEvent(Property);
     Asset->PostEditChangeProperty(ChangedEvent);
     Asset->MarkPackageDirty();
+
+    // Anti-lie evidence (known-issues "set_object_property silently fails"): re-export
+    // the property AFTER PostEditChangeProperty so the caller sees the value that will
+    // actually persist — a PostEditChange that sanitizes/reverts the import is visible
+    // here without a second read call.
+    FString AppliedValue;
+    Property->ExportTextItem_Direct(AppliedValue, ValuePtr, nullptr, Asset, PPF_None);
+    if (OutAppliedValue)
+    {
+        *OutAppliedValue = AppliedValue;
+    }
+
+    // Honest failure for unresolved object references: UE's ImportText imports an
+    // unloadable object path as None WITHOUT a parser error (verified live 2026-06-11:
+    // a bogus "/Game/.../ST_DoesNotExist" array element produced applied "(None)" and
+    // would otherwise report success). For object-ref-rooted properties, a None token
+    // in the re-exported value that the caller did not explicitly write means at least
+    // one reference failed to resolve — report failure instead of claiming success.
+    // Explicit "None" in the input keeps working (deliberate null slots).
+    {
+        const FProperty* RefRoot = Property;
+        if (const FArrayProperty* AsArray = CastField<FArrayProperty>(Property))
+        {
+            RefRoot = AsArray->Inner;
+        }
+        else if (const FSetProperty* AsSet = CastField<FSetProperty>(Property))
+        {
+            RefRoot = AsSet->ElementProp;
+        }
+        if (CastField<FObjectPropertyBase>(RefRoot))
+        {
+            // A null object ref exports as the bare token None: the whole value, or
+            // an array/set element right after '(' or ','. Quoted object paths can't
+            // produce these sequences.
+            auto HasNoneToken = [](const FString& S)
+            {
+                return S == TEXT("None")
+                    || S.Contains(TEXT("(None"))
+                    || S.Contains(TEXT(",None"));
+            };
+            if (HasNoneToken(AppliedValue) && !HasNoneToken(ValueString))
+            {
+                // Roll the in-memory value back so a later unrelated save can't
+                // persist the half-Nulled import.
+                FStringOutputDevice RollbackErrors;
+                Property->ImportText_Direct(*PreviousValue, ValuePtr, Asset, PPF_None, &RollbackErrors);
+                FPropertyChangedEvent RollbackEvent(Property);
+                Asset->PostEditChangeProperty(RollbackEvent);
+                OutError = FString::Printf(
+                    TEXT("One or more object references in '%s' failed to resolve (imported as None). ")
+                    TEXT("Check the asset paths. Rejected import: %s — asset rolled back to: %s"),
+                    *PropertyName, *AppliedValue, *PreviousValue);
+                return false;
+            }
+        }
+    }
 
     // Force a render-state refresh for level objects so the change shows live in
     // the editor viewport. PostEditChangeProperty alone marks render state dirty
@@ -401,7 +520,7 @@ bool FProjectDataAssetService::SetObjectProperty(const FString& AssetPath, const
         return true;
     }
 
-    if (!UEditorAssetLibrary::SaveAsset(AssetPath, false))
+    if (!UEditorAssetLibrary::SaveAsset(NormalizedPath, false))
     {
         OutError = FString::Printf(TEXT("Property set but SaveAsset failed for '%s'."), *AssetPath);
         return false;
